@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>simple_watcher - File System Watcher for Eiffel</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+    <header>
+        <div class="logo-container">
+            <img src="images/logo.png" alt="simple_* logo" class="logo">
+        </div>
+        <h1>simple_watcher</h1>
+        <p class="tagline">File System Watcher for Eiffel</p>
+        <div class="badges">
+            <span class="badge badge-rfc">Foundation Layer</span>
+            <span class="badge badge-version">v1.0.0</span>
+            <span class="badge badge-license">MIT</span>
+        </div>
+    </header>
+
+    <nav>
+        <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#quick-start">Quick Start</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#api">API Reference</a></li>
+            <li><a href="https://github.com/ljr1981/simple_watcher">GitHub</a></li>
+        </ul>
+    </nav>
+
+    <main>
+        <section id="overview">
+            <h2>Overview</h2>
+            <p>
+                <strong>simple_watcher</strong> provides SCOOP-compatible file system change monitoring for
+                Eiffel applications. It wraps the Win32 ReadDirectoryChangesW API through a clean C interface,
+                enabling real-time detection of file system changes without threading complications.
+            </p>
+            <p>
+                The library monitors directories for file additions, deletions, modifications, and renames,
+                with configurable watch flags for filtering specific change types. Supports both single-directory
+                and recursive subdirectory monitoring.
+            </p>
+            <p>
+                Part of the <strong>simple_*</strong> ecosystem of focused, single-purpose Eiffel libraries.
+            </p>
+        </section>
+
+        <section id="quick-start">
+            <h2>Quick Start</h2>
+            <h3>Installation</h3>
+            <pre><code>&lt;library name="simple_watcher" location="$SIMPLE_WATCHER\simple_watcher.ecf"/&gt;</code></pre>
+
+            <h3>Watch a Directory</h3>
+            <pre><code>local
+    watcher: SIMPLE_WATCHER
+    event: detachable SIMPLE_WATCH_EVENT
+do
+    -- Create watcher for a directory
+    create watcher.make ("C:\MyFolder", False, {SIMPLE_WATCHER}.Watch_all)
+
+    if watcher.is_valid then
+        watcher.start
+
+        from until not watcher.is_watching
+        loop
+            -- Poll for changes (non-blocking)
+            event := watcher.poll
+
+            if attached event as e then
+                print ("Event: " + e.event_type_string + " - " + e.filename + "%N")
+            end
+
+            sleep (100)  -- Small delay to avoid busy-waiting
+        end
+
+        watcher.close
+    end
+end</code></pre>
+
+            <h3>Recursive Monitoring</h3>
+            <pre><code>local
+    watcher: SIMPLE_WATCHER
+do
+    -- Watch directory and all subdirectories
+    create watcher.make ("C:\MyFolder", True, {SIMPLE_WATCHER}.Watch_all)
+
+    if watcher.is_valid then
+        watcher.start
+        -- ... monitoring loop ...
+        watcher.close
+    end
+end</code></pre>
+        </section>
+
+        <section id="features">
+            <h2>Features</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>File Changes</h4>
+                    <p>Detect file additions, deletions, modifications</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Rename Tracking</h4>
+                    <p>Track file and directory rename operations</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Recursive Mode</h4>
+                    <p>Optional monitoring of subdirectories</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Non-Blocking</h4>
+                    <p>Poll for events without blocking</p>
+                </div>
+            </div>
+
+            <h3>Watch Flags</h3>
+            <table>
+                <tr><th>Flag</th><th>Value</th><th>Description</th></tr>
+                <tr><td><code>Watch_file_name</code></td><td>0x0001</td><td>File creation/deletion/rename</td></tr>
+                <tr><td><code>Watch_dir_name</code></td><td>0x0002</td><td>Directory creation/deletion/rename</td></tr>
+                <tr><td><code>Watch_attributes</code></td><td>0x0004</td><td>Attribute changes</td></tr>
+                <tr><td><code>Watch_size</code></td><td>0x0008</td><td>File size changes</td></tr>
+                <tr><td><code>Watch_last_write</code></td><td>0x0010</td><td>Last write time changes</td></tr>
+                <tr><td><code>Watch_security</code></td><td>0x0020</td><td>Security descriptor changes</td></tr>
+                <tr><td><code>Watch_all</code></td><td>0x003F</td><td>All of the above</td></tr>
+            </table>
+
+            <h3>Event Types</h3>
+            <table>
+                <tr><th>Type</th><th>Code</th><th>Description</th></tr>
+                <tr><td>Added</td><td>1</td><td>File/directory created</td></tr>
+                <tr><td>Removed</td><td>2</td><td>File/directory deleted</td></tr>
+                <tr><td>Modified</td><td>3</td><td>File/directory modified</td></tr>
+                <tr><td>Renamed</td><td>4</td><td>File/directory renamed</td></tr>
+            </table>
+        </section>
+
+        <section id="api">
+            <h2>API Reference</h2>
+
+            <h3>SIMPLE_WATCHER</h3>
+            <table>
+                <tr><th>Feature</th><th>Description</th></tr>
+                <tr><td><code>make (path, recursive, flags)</code></td><td>Create watcher for directory</td></tr>
+                <tr><td><code>start</code></td><td>Begin watching for changes</td></tr>
+                <tr><td><code>poll</code></td><td>Poll for next event (non-blocking)</td></tr>
+                <tr><td><code>wait</code></td><td>Wait for next event (blocking)</td></tr>
+                <tr><td><code>close</code></td><td>Stop watching and release resources</td></tr>
+                <tr><td><code>is_valid</code></td><td>Is the watcher properly initialized?</td></tr>
+                <tr><td><code>is_watching</code></td><td>Is the watcher actively monitoring?</td></tr>
+            </table>
+
+            <h3>SIMPLE_WATCH_EVENT</h3>
+            <table>
+                <tr><th>Feature</th><th>Description</th></tr>
+                <tr><td><code>event_type</code></td><td>Type of change (1-4)</td></tr>
+                <tr><td><code>filename</code></td><td>Name of affected file/directory</td></tr>
+                <tr><td><code>is_added</code></td><td>Was a file/directory created?</td></tr>
+                <tr><td><code>is_removed</code></td><td>Was a file/directory deleted?</td></tr>
+                <tr><td><code>is_modified</code></td><td>Was a file/directory modified?</td></tr>
+                <tr><td><code>is_renamed</code></td><td>Was a file/directory renamed?</td></tr>
+                <tr><td><code>event_type_string</code></td><td>Human-readable event type</td></tr>
+            </table>
+        </section>
+    </main>
+
+    <footer>
+        <p>Part of the <a href="https://github.com/ljr1981">simple_*</a> library collection</p>
+        <p>Dependencies: base, encoding</p>
+        <p class="copyright">MIT License - Copyright (c) 2024-2025, Larry Rix</p>
+    </footer>
+</body>
+</html>
