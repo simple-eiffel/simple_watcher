@@ -4,7 +4,7 @@
 
 # SIMPLE_WATCHER
 
-**[Documentation](https://ljr1981.github.io/simple_watcher/)**
+**[Documentation](https://simple-eiffel.github.io/simple_watcher/)**
 
 ### File System Watcher Library for Eiffel
 
@@ -65,7 +65,7 @@ The library monitors directories for file additions, deletions, modifications, a
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/ljr1981/simple_watcher.git
+git clone https://github.com/simple-eiffel/simple_watcher.git
 ```
 
 2. Compile the C library:
@@ -297,8 +297,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## Contact
 
 - **Author:** Larry Rix
-- **Repository:** https://github.com/ljr1981/simple_watcher
-- **Issues:** https://github.com/ljr1981/simple_watcher/issues
+- **Repository:** https://github.com/simple-eiffel/simple_watcher
+- **Issues:** https://github.com/simple-eiffel/simple_watcher/issues
 
 ---
 
