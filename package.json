@@ -1,0 +1,9 @@
+{
+  "name": "simple_watcher",
+  "version": "0.1.0",
+  "description": "Simple File System Watcher Library - SCOOP-compatible Win32 directory monitoring",
+  "author": "Larry Rix",
+  "license": "MIT",
+  "category": "tools",
+  "keywords": ["watcher", "file", "monitor", "events"]
+}
