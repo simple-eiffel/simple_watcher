@@ -74,14 +74,14 @@ cd simple_watcher/Clib
 compile.bat
 ```
 
-3. Set the environment variable:
+3. Set the ecosystem environment variable (one-time setup for all simple_* libraries):
 ```bash
-set SIMPLE_WATCHER=D:\path\to\simple_watcher
+set SIMPLE_EIFFEL=D:\prod
 ```
 
 4. Add to your ECF file:
 ```xml
-<library name="simple_watcher" location="$SIMPLE_WATCHER\simple_watcher.ecf"/>
+<library name="simple_watcher" location="$SIMPLE_EIFFEL/simple_watcher/simple_watcher.ecf"/>
 ```
 
 ### Basic Usage
