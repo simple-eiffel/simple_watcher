@@ -85,6 +85,11 @@ typedef struct {
     int buffer_len;           /* Bytes in buffer */
     int buffer_pos;           /* Current position in buffer */
     int is_watching;
+    struct sw_dir_s* dirs;      /* watch descriptor to folder, relative to the root */
+    int dir_count;
+    int dir_capacity;
+    unsigned int user_mask;     /* what the caller asked to hear about */
+    unsigned int watch_mask;    /* what is watched, which may be more */
     sw_event* pending_event;
     char* error_message;
 } sw_watcher;

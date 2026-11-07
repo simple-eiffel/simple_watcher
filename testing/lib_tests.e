@@ -41,10 +41,10 @@ feature -- Setup
 			if l_file.exists then
 				l_file.delete
 			end
-			-- Remove test directory (must be empty)
+			-- Remove test directory, with any subfolders the tests made
 			create l_dir.make (test_dir_path)
-			if l_dir.exists and l_dir.is_empty then
-				l_dir.delete
+			if l_dir.exists then
+				l_dir.recursive_delete
 			end
 		end
 
@@ -120,6 +120,88 @@ feature -- Test: Real Events
 				assert ("names the file", al_event.filename.has_substring ("test_file.txt"))
 			end
 			l_watcher.close
+		end
+
+	test_subfolder_file_is_reported
+			-- A file made in an existing subfolder arrives when watching the subtree.
+		local
+			l_watcher: SIMPLE_WATCHER
+			l_dir: DIRECTORY
+		do
+			create l_dir.make (test_dir_path + "/existing_sub")
+			if not l_dir.exists then
+				l_dir.create_dir
+			end
+			create l_watcher.make (test_dir_path, True, Watch_all_flag)
+			l_watcher.start
+			write_file (test_dir_path + "/existing_sub/inner.txt")
+			assert ("reported", saw_event_for (l_watcher, "inner.txt"))
+			l_watcher.close
+		end
+
+	test_new_folder_is_watched
+			-- A file made in a folder created after watching began also arrives.
+		local
+			l_watcher: SIMPLE_WATCHER
+			l_dir: DIRECTORY
+		do
+			create l_watcher.make (test_dir_path, True, Watch_all_flag)
+			l_watcher.start
+			create l_dir.make (test_dir_path + "/new_sub")
+			if not l_dir.exists then
+				l_dir.create_dir
+			end
+			assert ("folder reported", saw_event_for (l_watcher, "new_sub"))
+			write_file (test_dir_path + "/new_sub/later.txt")
+			assert ("file in the new folder reported", saw_event_for (l_watcher, "later.txt"))
+			l_watcher.close
+		end
+
+	test_subfolder_is_silent_without_subtree
+			-- Without a subtree watch, a subfolder's file is not reported.
+		local
+			l_watcher: SIMPLE_WATCHER
+			l_dir: DIRECTORY
+		do
+			create l_dir.make (test_dir_path + "/quiet_sub")
+			if not l_dir.exists then
+				l_dir.create_dir
+			end
+			create l_watcher.make (test_dir_path, False, Watch_all_flag)
+			l_watcher.start
+			write_file (test_dir_path + "/quiet_sub/hidden.txt")
+			assert ("not reported", not saw_event_for (l_watcher, "hidden.txt"))
+			l_watcher.close
+		end
+
+feature {NONE} -- Subtree test support
+
+	write_file (a_path: STRING)
+			-- Create a small file at `a_path'.
+		local
+			l_file: RAW_FILE
+		do
+			create l_file.make_with_name (a_path)
+			l_file.create_read_write
+			l_file.put_string ("x")
+			l_file.close
+		end
+
+	saw_event_for (a_watcher: SIMPLE_WATCHER; a_name: STRING): BOOLEAN
+			-- Does an event naming `a_name' arrive within about two seconds?
+		local
+			i: INTEGER
+		do
+			from
+				i := 1
+			until
+				Result or i > 20
+			loop
+				if attached a_watcher.wait (100) as al_event then
+					Result := al_event.filename.has_substring (a_name)
+				end
+				i := i + 1
+			end
 		end
 
 feature -- Test: Watch Path
