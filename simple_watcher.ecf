@@ -27,6 +27,11 @@
 				<platform excluded_value="windows"/>
 			</condition>
 		</external_object>
+		<external_linker_flag value="-framework CoreServices">
+			<condition>
+				<platform value="macintosh"/>
+			</condition>
+		</external_linker_flag>
 		<library name="base" location="$ISE_LIBRARY\library\base\base.ecf"/>
 		<cluster name="src" location=".\src\" recursive="true"/>
 	</target>

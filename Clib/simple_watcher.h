@@ -3,7 +3,7 @@
  *
  * Windows: Uses ReadDirectoryChangesW with overlapped I/O
  * Linux: Uses inotify
- * macOS: Uses FSEvents (TODO - not implemented yet)
+ * macOS: Uses FSEvents
  *
  * Copyright (c) 2025 Larry Rix - MIT License
  */
@@ -13,6 +13,8 @@
 
 #if defined(_WIN32) || defined(EIF_WINDOWS)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
 #endif
 
 /* Change event types */
@@ -49,6 +51,26 @@ typedef struct {
     unsigned char buffer[8192];
     int is_watching;
     sw_event* pending_event;
+    char* error_message;
+} sw_watcher;
+#elif defined(__APPLE__)
+/* macOS FSEvents implementation */
+struct sw_queued_s;
+
+typedef struct {
+    void* stream;             /* FSEventStreamRef, once started */
+    void* queue;              /* dispatch_queue_t, once started */
+    char* watch_path;
+    char* real_path;          /* resolved, as FSEvents reports it; NULL if not found */
+    int watch_subtree;
+    int filter;               /* Our SWF_* flags */
+    int is_watching;
+    pthread_mutex_t lock;     /* guards the event list */
+    pthread_cond_t ready;     /* an event was queued */
+    struct sw_queued_s* first;
+    struct sw_queued_s* last;
+    void* seen;               /* flags already acted on, per path */
+    int seen_next;
     char* error_message;
 } sw_watcher;
 #else
