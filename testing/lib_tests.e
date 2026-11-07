@@ -41,10 +41,10 @@ feature -- Setup
 			if l_file.exists then
 				l_file.delete
 			end
-			-- Remove test directory (must be empty)
+			-- Remove test directory, with any subfolders the tests made
 			create l_dir.make (test_dir_path)
-			if l_dir.exists and l_dir.is_empty then
-				l_dir.delete
+			if l_dir.exists then
+				l_dir.recursive_delete
 			end
 		end
 
