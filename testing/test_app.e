@@ -37,6 +37,14 @@ feature -- Initialization
 			print ("PASSED%N")
 			l_passed := l_passed + 1
 
+			-- Test: A real file event
+			print ("  test_created_file_is_reported: ")
+			l_tests.on_prepare
+			l_tests.test_created_file_is_reported
+			l_tests.on_clean
+			print ("PASSED%N")
+			l_passed := l_passed + 1
+
 			-- Test: Watcher close
 			print ("  test_watcher_close: ")
 			l_tests.on_prepare

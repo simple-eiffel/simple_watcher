@@ -3,7 +3,7 @@
  *
  * Windows: Uses ReadDirectoryChangesW with overlapped I/O
  * Linux: Uses inotify
- * macOS: Uses FSEvents (TODO - not implemented yet)
+ * macOS: Uses FSEvents
  *
  * Copyright (c) 2025 Larry Rix - MIT License
  */
@@ -12,7 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(__APPLE__)
 static char last_error_msg[512] = {0};
+#endif
 
 #if defined(_WIN32) || defined(EIF_WINDOWS)
 /* ============ WINDOWS IMPLEMENTATION ============ */
@@ -269,10 +271,307 @@ void sw_free_event(sw_event* event) {
     }
 }
 
+#elif defined(__APPLE__)
+/* ============ macOS FSEVENTS IMPLEMENTATION ============ */
+/* FSEvents delivers on a dispatch queue, so events wait in a list for sw_poll
+   and sw_wait. It watches whole subtrees natively; for a top-level watch the
+   deeper events are dropped here. It merges a burst on one file into one event
+   with several flags, so the file's present state settles which event it is. */
+
+#include <CoreServices/CoreServices.h>
+#include <dispatch/dispatch.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+
+#define SW_LATENCY_SECONDS 0.05
+#define SW_SEEN_SLOTS 64
+
+struct sw_queued_s {
+    sw_event* event;
+    struct sw_queued_s* next;
+};
+
+/* FSEvents flags are sticky: for a while after a file is created, every report
+   on it still says "created". So each path remembers the flags already acted
+   on, and only new ones count. Used on the dispatch queue only. */
+struct sw_seen_s {
+    char* name;
+    FSEventStreamEventFlags flags;
+};
+
+static void set_error(sw_watcher* w, const char* a_text) {
+    if (w->error_message) free(w->error_message);
+    w->error_message = strdup(a_text);
+}
+
+/* The slot remembering `a_name', taking the oldest when it is new. */
+static struct sw_seen_s* seen_slot(sw_watcher* w, const char* a_name) {
+    struct sw_seen_s* l_seen = (struct sw_seen_s*)w->seen;
+    struct sw_seen_s* l_slot;
+    int l_i;
+    for (l_i = 0; l_i < SW_SEEN_SLOTS; l_i++) {
+        if (l_seen[l_i].name && strcmp(l_seen[l_i].name, a_name) == 0) return &l_seen[l_i];
+    }
+    l_slot = &l_seen[w->seen_next];
+    w->seen_next = (w->seen_next + 1) % SW_SEEN_SLOTS;
+    free(l_slot->name);
+    l_slot->name = strdup(a_name);
+    l_slot->flags = 0;
+    return l_slot;
+}
+
+/* What to remember of `a_flags': a path that is gone starts afresh. */
+static FSEventStreamEventFlags flags_to_remember(FSEventStreamEventFlags a_flags, int a_exists) {
+    return a_exists ? a_flags : 0;
+}
+
+/* The sw_event for one FSEvents report, or NULL when it is filtered out. */
+static sw_event* new_event(sw_watcher* w, const char* a_path, FSEventStreamEventFlags a_flags) {
+    size_t l_root = strlen(w->real_path);
+    const char* l_name;
+    struct stat l_info;
+    struct sw_seen_s* l_seen;
+    FSEventStreamEventFlags l_new;
+    sw_event* l_event;
+    int l_type;
+    int l_exists = lstat(a_path, &l_info) == 0;
+    int l_is_dir = (a_flags & kFSEventStreamEventFlagItemIsDir) != 0;
+    int l_names = w->filter & (l_is_dir ? SWF_DIR_NAME : SWF_FILE_NAME);
+
+    if (strncmp(a_path, w->real_path, l_root) != 0 || a_path[l_root] != '/') return NULL;
+    l_name = a_path + l_root + 1;
+    if (!*l_name) return NULL;
+    if (!w->watch_subtree && strchr(l_name, '/')) return NULL;
+
+    l_seen = seen_slot(w, l_name);
+    l_new = a_flags & ~l_seen->flags;
+    l_seen->flags = flags_to_remember(a_flags, l_exists);
+
+    if ((a_flags & kFSEventStreamEventFlagItemRemoved) && !l_exists) {
+        if (!l_names) return NULL;
+        l_type = SWE_FILE_REMOVED;
+    } else if (l_new & kFSEventStreamEventFlagItemRenamed) {
+        if (!l_names) return NULL;
+        l_type = SWE_FILE_RENAMED;
+    } else if (l_new & kFSEventStreamEventFlagItemCreated) {
+        if (!l_names) return NULL;
+        l_type = SWE_FILE_ADDED;
+    } else if (a_flags & (kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemInodeMetaMod
+                          | kFSEventStreamEventFlagItemChangeOwner | kFSEventStreamEventFlagItemXattrMod
+                          | kFSEventStreamEventFlagItemFinderInfoMod)) {
+        if (!(w->filter & (SWF_ATTRIBUTES | SWF_SIZE | SWF_LAST_WRITE | SWF_SECURITY))) return NULL;
+        l_type = SWE_FILE_MODIFIED;
+    } else {
+        return NULL;
+    }
+
+    l_event = (sw_event*)calloc(1, sizeof(sw_event));
+    if (!l_event) return NULL;
+    l_event->event_type = l_type;
+    l_event->filename = strdup(l_name);
+    return l_event;
+}
+
+static void on_events(ConstFSEventStreamRef a_stream, void* a_watcher, size_t a_count, void* a_paths,
+                      const FSEventStreamEventFlags a_flags[], const FSEventStreamEventId a_ids[]) {
+    sw_watcher* w = (sw_watcher*)a_watcher;
+    char** l_paths = (char**)a_paths;
+    size_t l_i;
+    (void)a_stream;
+    (void)a_ids;
+
+    for (l_i = 0; l_i < a_count; l_i++) {
+        sw_event* l_event = new_event(w, l_paths[l_i], a_flags[l_i]);
+        if (l_event) {
+            struct sw_queued_s* l_node = (struct sw_queued_s*)malloc(sizeof(struct sw_queued_s));
+            if (!l_node) {
+                sw_free_event(l_event);
+            } else {
+                l_node->event = l_event;
+                l_node->next = NULL;
+                pthread_mutex_lock(&w->lock);
+                if (w->last) w->last->next = l_node; else w->first = l_node;
+                w->last = l_node;
+                pthread_cond_broadcast(&w->ready);
+                pthread_mutex_unlock(&w->lock);
+            }
+        }
+    }
+}
+
+sw_watcher* sw_create(const char* path, int watch_subtree, int flags) {
+    sw_watcher* w;
+    char l_real[PATH_MAX];
+    struct stat l_info;
+
+    w = (sw_watcher*)calloc(1, sizeof(sw_watcher));
+    if (!w) return NULL;
+    pthread_mutex_init(&w->lock, NULL);
+    pthread_cond_init(&w->ready, NULL);
+    w->watch_path = strdup(path);
+    w->watch_subtree = watch_subtree;
+    w->filter = flags;
+    w->seen = calloc(SW_SEEN_SLOTS, sizeof(struct sw_seen_s));
+
+    /* FSEvents reports resolved paths: /tmp arrives as /private/tmp. */
+    if (!realpath(path, l_real) || stat(l_real, &l_info) != 0) {
+        set_error(w, strerror(errno));
+        return w;
+    }
+    if (!S_ISDIR(l_info.st_mode)) {
+        set_error(w, strerror(ENOTDIR));
+        return w;
+    }
+    w->real_path = strdup(l_real);
+    return w;
+}
+
+int sw_start(sw_watcher* watcher) {
+    FSEventStreamContext l_context;
+    FSEventStreamRef l_stream;
+    CFStringRef l_path;
+    CFArrayRef l_paths;
+    dispatch_queue_t l_queue;
+
+    if (!watcher || !watcher->real_path || !watcher->seen) return 0;
+    if (watcher->is_watching) return 1;
+
+    memset(&l_context, 0, sizeof(l_context));
+    l_context.info = watcher;
+    l_path = CFStringCreateWithCString(NULL, watcher->real_path, kCFStringEncodingUTF8);
+    if (!l_path) { set_error(watcher, "The path is not valid UTF-8"); return 0; }
+    l_paths = CFArrayCreate(NULL, (const void**)&l_path, 1, &kCFTypeArrayCallBacks);
+    CFRelease(l_path);
+    if (!l_paths) { set_error(watcher, "Out of memory"); return 0; }
+    l_stream = FSEventStreamCreate(NULL, on_events, &l_context, l_paths, kFSEventStreamEventIdSinceNow,
+                                   SW_LATENCY_SECONDS, kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer);
+    CFRelease(l_paths);
+    if (!l_stream) { set_error(watcher, "FSEventStreamCreate failed"); return 0; }
+    l_queue = dispatch_queue_create("simple_watcher", NULL);
+    FSEventStreamSetDispatchQueue(l_stream, l_queue);
+    if (!FSEventStreamStart(l_stream)) {
+        FSEventStreamInvalidate(l_stream);
+        FSEventStreamRelease(l_stream);
+        dispatch_release(l_queue);
+        set_error(watcher, "FSEventStreamStart failed");
+        return 0;
+    }
+    watcher->stream = l_stream;
+    watcher->queue = l_queue;
+    watcher->is_watching = 1;
+    return 1;
+}
+
+/* With the lock held: take the oldest queued event, if any. */
+static sw_event* take_event(sw_watcher* watcher) {
+    struct sw_queued_s* l_node = watcher->first;
+    sw_event* l_event = NULL;
+    if (l_node) {
+        watcher->first = l_node->next;
+        if (!watcher->first) watcher->last = NULL;
+        l_event = l_node->event;
+        free(l_node);
+    }
+    return l_event;
+}
+
+sw_event* sw_poll(sw_watcher* watcher) {
+    sw_event* l_event;
+    if (!watcher || !watcher->is_watching) return NULL;
+    pthread_mutex_lock(&watcher->lock);
+    l_event = take_event(watcher);
+    pthread_mutex_unlock(&watcher->lock);
+    return l_event;
+}
+
+sw_event* sw_wait(sw_watcher* watcher, int timeout_ms) {
+    struct timespec l_until;
+    sw_event* l_event;
+    int l_result = 0;
+
+    if (!watcher || !watcher->is_watching) return NULL;
+    if (timeout_ms >= 0) {
+        clock_gettime(CLOCK_REALTIME, &l_until);
+        l_until.tv_sec += timeout_ms / 1000;
+        l_until.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+        if (l_until.tv_nsec >= 1000000000L) {
+            l_until.tv_sec += 1;
+            l_until.tv_nsec -= 1000000000L;
+        }
+    }
+    pthread_mutex_lock(&watcher->lock);
+    while (!watcher->first && l_result == 0) {
+        if (timeout_ms < 0) {
+            pthread_cond_wait(&watcher->ready, &watcher->lock);
+        } else {
+            l_result = pthread_cond_timedwait(&watcher->ready, &watcher->lock, &l_until);
+        }
+    }
+    l_event = take_event(watcher);
+    pthread_mutex_unlock(&watcher->lock);
+    return l_event;
+}
+
+int sw_is_watching(sw_watcher* watcher) {
+    return watcher ? watcher->is_watching : 0;
+}
+
+const char* sw_get_path(sw_watcher* watcher) {
+    return watcher ? watcher->watch_path : NULL;
+}
+
+const char* sw_get_error(sw_watcher* watcher) {
+    return watcher ? watcher->error_message : NULL;
+}
+
+static void nothing(void* a_ignored) { (void)a_ignored; }
+
+void sw_close(sw_watcher* watcher) {
+    sw_event* l_event;
+    if (watcher) {
+        if (watcher->stream) {
+            FSEventStreamRef l_stream = (FSEventStreamRef)watcher->stream;
+            dispatch_queue_t l_queue = (dispatch_queue_t)watcher->queue;
+            FSEventStreamStop(l_stream);
+            FSEventStreamInvalidate(l_stream);
+            /* A callback already on the queue finishes before the record goes. */
+            dispatch_sync_f(l_queue, NULL, nothing);
+            FSEventStreamRelease(l_stream);
+            dispatch_release(l_queue);
+        }
+        while ((l_event = take_event(watcher)) != NULL) sw_free_event(l_event);
+        if (watcher->seen) {
+            struct sw_seen_s* l_seen = (struct sw_seen_s*)watcher->seen;
+            int l_i;
+            for (l_i = 0; l_i < SW_SEEN_SLOTS; l_i++) free(l_seen[l_i].name);
+            free(l_seen);
+        }
+        pthread_cond_destroy(&watcher->ready);
+        pthread_mutex_destroy(&watcher->lock);
+        if (watcher->watch_path) free(watcher->watch_path);
+        if (watcher->real_path) free(watcher->real_path);
+        if (watcher->error_message) free(watcher->error_message);
+        free(watcher);
+    }
+}
+
+void sw_free_event(sw_event* event) {
+    if (event) {
+        if (event->filename) free(event->filename);
+        if (event->old_filename) free(event->old_filename);
+        free(event);
+    }
+}
+
 #else
 /* ============ LINUX INOTIFY IMPLEMENTATION ============ */
-/* Note: macOS FSEvents not yet implemented - coming Friday with Mac Mini */
 
+#include <stdint.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sys/inotify.h>

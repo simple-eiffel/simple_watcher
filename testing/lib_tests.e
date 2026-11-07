@@ -33,11 +33,11 @@ feature -- Setup
 			l_file: RAW_FILE
 		do
 			-- Clean up test files
-			create l_file.make_with_name (test_dir_path + "\test_file.txt")
+			create l_file.make_with_name (test_dir_path + "/test_file.txt")
 			if l_file.exists then
 				l_file.delete
 			end
-			create l_file.make_with_name (test_dir_path + "\another_file.txt")
+			create l_file.make_with_name (test_dir_path + "/another_file.txt")
 			if l_file.exists then
 				l_file.delete
 			end
@@ -95,6 +95,31 @@ feature -- Test: Watcher Creation
 
 			l_watcher.close
 			assert ("not valid after close", not l_watcher.is_valid)
+		end
+
+feature -- Test: Real Events
+
+	test_created_file_is_reported
+			-- A file really created in the watched folder arrives as an added event.
+		local
+			l_watcher: SIMPLE_WATCHER
+			l_file: RAW_FILE
+			l_event: detachable SIMPLE_WATCH_EVENT
+		do
+			create l_watcher.make (test_dir_path, False, Watch_all_flag)
+			l_watcher.start
+			assert ("is watching", l_watcher.is_watching)
+			create l_file.make_with_name (test_dir_path + "/test_file.txt")
+			l_file.create_read_write
+			l_file.put_string ("x")
+			l_file.close
+			l_event := l_watcher.wait (5000)
+			assert ("event arrived", l_event /= Void)
+			if attached l_event as al_event then
+				assert ("is added", al_event.is_added)
+				assert ("names the file", al_event.filename.has_substring ("test_file.txt"))
+			end
+			l_watcher.close
 		end
 
 feature -- Test: Watch Path
