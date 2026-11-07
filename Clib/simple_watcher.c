@@ -577,6 +577,14 @@ void sw_free_event(sw_event* event) {
 #include <sys/inotify.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+/* One watched folder. `relative' is "" for the root. */
+struct sw_dir_s {
+    int descriptor;
+    char* relative;
+};
 
 static void store_last_error(void) {
     snprintf(last_error_msg, sizeof(last_error_msg) - 1, "%s", strerror(errno));
@@ -605,6 +613,103 @@ static int inotify_mask_to_event_type(uint32_t mask) {
     return SWE_FILE_MODIFIED;
 }
 
+static void remember_dir(sw_watcher* w, int descriptor, const char* relative) {
+    int i;
+    for (i = 0; i < w->dir_count; i++) {
+        if (w->dirs[i].descriptor == descriptor) {
+            free(w->dirs[i].relative);
+            w->dirs[i].relative = strdup(relative);
+            return;
+        }
+    }
+    if (w->dir_count == w->dir_capacity) {
+        int capacity = w->dir_capacity ? w->dir_capacity * 2 : 16;
+        struct sw_dir_s* grown = (struct sw_dir_s*)realloc(w->dirs, (size_t)capacity * sizeof(struct sw_dir_s));
+        if (!grown) return;
+        w->dirs = grown;
+        w->dir_capacity = capacity;
+    }
+    w->dirs[w->dir_count].descriptor = descriptor;
+    w->dirs[w->dir_count].relative = strdup(relative);
+    w->dir_count++;
+}
+
+static void forget_dir(sw_watcher* w, int descriptor) {
+    int i;
+    for (i = 0; i < w->dir_count; i++) {
+        if (w->dirs[i].descriptor == descriptor) {
+            free(w->dirs[i].relative);
+            w->dirs[i] = w->dirs[w->dir_count - 1];
+            w->dir_count--;
+            return;
+        }
+    }
+}
+
+static const char* relative_of(sw_watcher* w, int descriptor) {
+    int i;
+    for (i = 0; i < w->dir_count; i++) {
+        if (w->dirs[i].descriptor == descriptor) return w->dirs[i].relative;
+    }
+    return NULL;
+}
+
+/* `a' joined to `b' with a slash, leaving out an empty `a'. Caller frees. */
+static char* join_path(const char* a, const char* b) {
+    size_t size = strlen(a) + strlen(b) + 2;
+    char* result = (char*)malloc(size);
+    if (result) {
+        if (a[0]) snprintf(result, size, "%s/%s", a, b);
+        else snprintf(result, size, "%s", b);
+    }
+    return result;
+}
+
+static void note_error_once(sw_watcher* w) {
+    if (!w->error_message) {
+        store_last_error();
+        w->error_message = strdup(last_error_msg);
+    }
+}
+
+/* Watch the folder at `relative' under the root and every folder below it. Links
+   are not followed, so a loop cannot trap this. A failure, such as running out of
+   watches, is kept in `error_message' rather than passed over in silence. */
+static void watch_tree(sw_watcher* w, const char* relative) {
+    char* full = join_path(w->watch_path, relative);
+    DIR* dir;
+    struct dirent* entry;
+    int descriptor;
+
+    if (!full) return;
+    descriptor = inotify_add_watch(w->inotify_fd, full, w->watch_mask | IN_ONLYDIR | IN_DONT_FOLLOW);
+    if (descriptor < 0) {
+        if (errno != ENOENT && errno != ENOTDIR) note_error_once(w);
+        free(full);
+        return;
+    }
+    remember_dir(w, descriptor, relative);
+    dir = opendir(full);
+    if (dir) {
+        while ((entry = readdir(dir)) != NULL) {
+            char* child_full;
+            struct stat info;
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+            child_full = join_path(full, entry->d_name);
+            if (child_full && lstat(child_full, &info) == 0 && S_ISDIR(info.st_mode)) {
+                char* child = join_path(relative, entry->d_name);
+                if (child) {
+                    watch_tree(w, child);
+                    free(child);
+                }
+            }
+            free(child_full);
+        }
+        closedir(dir);
+    }
+    free(full);
+}
+
 sw_watcher* sw_create(const char* path, int watch_subtree, int flags) {
     sw_watcher* w;
     uint32_t mask;
@@ -627,9 +732,11 @@ sw_watcher* sw_create(const char* path, int watch_subtree, int flags) {
         return w;
     }
 
-    /* Add watch */
+    /* Add watch. A subtree also needs to hear of new folders, whatever was asked. */
     mask = flags_to_inotify_mask(flags);
-    w->watch_descriptor = inotify_add_watch(w->inotify_fd, path, mask);
+    w->user_mask = mask;
+    w->watch_mask = watch_subtree ? (mask | IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE) : mask;
+    w->watch_descriptor = inotify_add_watch(w->inotify_fd, path, w->watch_mask);
     if (w->watch_descriptor < 0) {
         store_last_error();
         w->error_message = strdup(last_error_msg);
@@ -638,11 +745,25 @@ sw_watcher* sw_create(const char* path, int watch_subtree, int flags) {
         return w;
     }
 
-    /* Note: watch_subtree is requested but inotify doesn't natively support it.
-     * A full implementation would recursively add watches for subdirectories.
-     * For now, we only watch the top-level directory. */
+    remember_dir(w, w->watch_descriptor, "");
+
+    /* inotify watches one folder at a time, so a subtree is a watch per folder. */
     if (watch_subtree) {
-        /* TODO: Recursively add watches for subdirectories */
+        DIR* dir = opendir(path);
+        struct dirent* entry;
+        if (dir) {
+            while ((entry = readdir(dir)) != NULL) {
+                char* child_full;
+                struct stat info;
+                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+                child_full = join_path(path, entry->d_name);
+                if (child_full && lstat(child_full, &info) == 0 && S_ISDIR(info.st_mode)) {
+                    watch_tree(w, entry->d_name);
+                }
+                free(child_full);
+            }
+            closedir(dir);
+        }
     }
 
     return w;
@@ -656,33 +777,58 @@ int sw_start(sw_watcher* watcher) {
     return 1;
 }
 
+/* The next event the caller asked for, keeping the folder table up to date. */
 static sw_event* read_next_event(sw_watcher* watcher) {
     struct inotify_event* event;
     sw_event* result;
+    const char* relative;
+    char* name;
 
-    if (watcher->buffer_pos >= watcher->buffer_len) {
-        /* Need to read more data */
-        ssize_t len = read(watcher->inotify_fd, watcher->buffer, sizeof(watcher->buffer));
-        if (len <= 0) {
+    for (;;) {
+        if (watcher->buffer_pos >= watcher->buffer_len) {
+            /* Need to read more data */
+            ssize_t len = read(watcher->inotify_fd, watcher->buffer, sizeof(watcher->buffer));
+            if (len <= 0) {
+                return NULL;
+            }
+            watcher->buffer_len = (int)len;
+            watcher->buffer_pos = 0;
+        }
+
+        event = (struct inotify_event*)(watcher->buffer + watcher->buffer_pos);
+        watcher->buffer_pos += sizeof(struct inotify_event) + event->len;
+
+        /* The kernel dropped this watch: a bookkeeping notice, not a change. */
+        if (event->mask & IN_IGNORED) {
+            forget_dir(watcher, event->wd);
+            continue;
+        }
+        relative = relative_of(watcher, event->wd);
+        if (!relative) relative = "";
+        name = join_path(relative, event->len > 0 ? event->name : "");
+
+        if (watcher->watch_subtree && (event->mask & IN_ISDIR) && (event->mask & (IN_CREATE | IN_MOVED_TO))) {
+            if (name) watch_tree(watcher, name);
+        }
+        if (!(event->mask & watcher->user_mask)) {
+            free(name);
+            continue;
+        }
+
+        result = (sw_event*)malloc(sizeof(sw_event));
+        if (!result) {
+            free(name);
             return NULL;
         }
-        watcher->buffer_len = (int)len;
-        watcher->buffer_pos = 0;
+        memset(result, 0, sizeof(sw_event));
+        result->event_type = inotify_mask_to_event_type(event->mask);
+        if (event->len > 0) {
+            result->filename = name;
+        } else {
+            free(name);
+        }
+        return result;
     }
-
-    event = (struct inotify_event*)(watcher->buffer + watcher->buffer_pos);
-    watcher->buffer_pos += sizeof(struct inotify_event) + event->len;
-
-    result = (sw_event*)malloc(sizeof(sw_event));
-    if (!result) return NULL;
-    memset(result, 0, sizeof(sw_event));
-
-    result->event_type = inotify_mask_to_event_type(event->mask);
-    if (event->len > 0) {
-        result->filename = strdup(event->name);
-    }
-
-    return result;
 }
 
 sw_event* sw_poll(sw_watcher* watcher) {
@@ -695,7 +841,6 @@ sw_event* sw_poll(sw_watcher* watcher) {
 sw_event* sw_wait(sw_watcher* watcher, int timeout_ms) {
     struct pollfd pfd;
     int ret;
-    sw_event* event;
 
     if (!watcher || !watcher->is_watching || watcher->inotify_fd < 0) {
         return NULL;
@@ -746,6 +891,11 @@ void sw_close(sw_watcher* watcher) {
         }
         if (watcher->pending_event) {
             sw_free_event(watcher->pending_event);
+        }
+        if (watcher->dirs) {
+            int i;
+            for (i = 0; i < watcher->dir_count; i++) free(watcher->dirs[i].relative);
+            free(watcher->dirs);
         }
         free(watcher);
     }

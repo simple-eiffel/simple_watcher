@@ -45,6 +45,30 @@ feature -- Initialization
 			print ("PASSED%N")
 			l_passed := l_passed + 1
 
+			-- Test: A file in a subfolder
+			print ("  test_subfolder_file_is_reported: ")
+			l_tests.on_prepare
+			l_tests.test_subfolder_file_is_reported
+			l_tests.on_clean
+			print ("PASSED%N")
+			l_passed := l_passed + 1
+
+			-- Test: A folder made after watching began
+			print ("  test_new_folder_is_watched: ")
+			l_tests.on_prepare
+			l_tests.test_new_folder_is_watched
+			l_tests.on_clean
+			print ("PASSED%N")
+			l_passed := l_passed + 1
+
+			-- Test: No subtree, no subfolder events
+			print ("  test_subfolder_is_silent_without_subtree: ")
+			l_tests.on_prepare
+			l_tests.test_subfolder_is_silent_without_subtree
+			l_tests.on_clean
+			print ("PASSED%N")
+			l_passed := l_passed + 1
+
 			-- Test: Watcher close
 			print ("  test_watcher_close: ")
 			l_tests.on_prepare
