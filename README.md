@@ -20,7 +20,7 @@
 
 ## Overview
 
-SIMPLE_WATCHER provides SCOOP-compatible file system change monitoring for Eiffel applications. It wraps the Win32 ReadDirectoryChangesW API through a clean C interface, enabling real-time detection of file system changes without threading complications.
+SIMPLE_WATCHER provides SCOOP-compatible file system change monitoring for Eiffel applications. It wraps the operating system's own change notifications through a clean C interface (ReadDirectoryChangesW on Windows, FSEvents on macOS, inotify on Linux), enabling real-time detection of file system changes without threading complications.
 
 The library monitors directories for file additions, deletions, modifications, and renames, with configurable watch flags for filtering specific change types. Supports both single-directory and recursive subdirectory monitoring.
 
@@ -71,13 +71,21 @@ git clone https://github.com/simple-eiffel/simple_watcher.git
 
 2. Compile the C library:
 ```bash
+# Windows
 cd simple_watcher/Clib
 compile.bat
+
+# macOS/Linux (from simple_watcher/)
+make -C Clib
 ```
 
 3. Set the ecosystem environment variable (one-time setup for all simple_* libraries):
 ```bash
+# Windows
 set SIMPLE_EIFFEL=D:\prod
+
+# macOS/Linux
+export SIMPLE_EIFFEL=$HOME/simple_eiffel
 ```
 
 4. Add to your ECF file:
@@ -250,7 +258,9 @@ ec -config simple_watcher.ecf -target simple_watcher_tests -c_compile
 ./EIFGENs/simple_watcher_tests/W_code/simple_watcher.exe
 ```
 
-**Test Results:** 9 tests passing
+(No `.exe` on macOS/Linux: run `./EIFGENs/simple_watcher_tests/W_code/simple_watcher`.)
+
+**Test Results:** 13 tests passing on Windows, macOS and Linux
 
 ---
 
@@ -261,7 +271,8 @@ simple_watcher/
 ├── Clib/                       # C wrapper library
 │   ├── simple_watcher.h        # C header file
 │   ├── simple_watcher.c        # C implementation
-│   └── compile.bat             # Build script
+│   ├── compile.bat             # Build script (Windows)
+│   └── Makefile                # make -C Clib (macOS/Linux)
 ├── src/                        # Eiffel source
 │   ├── simple_watcher.e        # Main watcher class
 │   └── simple_watch_event.e    # Event class
@@ -277,15 +288,23 @@ simple_watcher/
 
 ## Dependencies
 
-- **Windows OS** - ReadDirectoryChangesW is Windows-specific
+- **Windows, macOS or Linux** - ReadDirectoryChangesW on Windows, FSEvents on macOS (the CoreServices framework, linked automatically), inotify on Linux
 - **EiffelStudio 23.09+** - Development environment
-- **Visual Studio C++ Build Tools** - For compiling C wrapper
+- **A C compiler** - Visual Studio Build Tools on Windows; clang or gcc on macOS/Linux
+
+---
+
+## Platform Notes
+
+- **macOS:** FSEvents reports changes after about 50 ms, and merges a burst of changes to one file into one event, which is reported by the file's state when it arrives.
+- **Linux:** inotify watches one directory at a time, so a subtree watch adds a watch for each folder, including folders created while it runs. A very large tree can reach the system's limit on watches (`fs.inotify.max_user_watches`).
+- The watch flags map to the nearest change each system reports; `Watch_security` has no exact match off Windows.
 
 ---
 
 ## SCOOP Compatibility
 
-SIMPLE_WATCHER is fully SCOOP-compatible. The C wrapper handles all Win32 API calls synchronously without threading dependencies, making it safe for use in concurrent Eiffel applications.
+SIMPLE_WATCHER is fully SCOOP-compatible. The C wrapper handles all system calls synchronously without threading dependencies, making it safe for use in concurrent Eiffel applications.
 
 ---
 
@@ -306,5 +325,5 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## Acknowledgments
 
 - Built with Claude Opus 4.5 (Anthropic)
-- Uses Win32 ReadDirectoryChangesW API (Microsoft)
+- Uses Win32 ReadDirectoryChangesW (Microsoft), FSEvents (Apple) and inotify (Linux)
 - Part of the simple_ library collection for Eiffel
