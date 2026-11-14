@@ -50,8 +50,27 @@ feature -- Setup
 
 feature -- Access
 
-	test_dir_path: STRING = "simple_watcher_test_dir"
-			-- Path to test directory.
+	test_dir_path: STRING
+			-- The test directory: in the system's temporary folder (TEMP, TMPDIR, or the
+			-- platform's own), never the checkout the tests run from.
+		local
+			l_env: EXECUTION_ENVIRONMENT
+		once
+			create l_env
+			if attached l_env.item ("TEMP") as l_temp then
+				Result := l_temp.to_string_8
+			elseif attached l_env.item ("TMPDIR") as l_temp then
+				Result := l_temp.to_string_8
+			elseif {PLATFORM}.is_windows then
+				Result := "C:\Windows\Temp"
+			else
+				Result := "/tmp"
+			end
+			if Result.ends_with ("/") or Result.ends_with ("\") then
+				Result.remove_tail (1)
+			end
+			Result := Result + "/simple_watcher_test_dir"
+		end
 
 	Watch_all_flag: INTEGER = 0x003F
 			-- Watch all changes flag value.
