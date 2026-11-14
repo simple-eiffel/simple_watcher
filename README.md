@@ -297,6 +297,7 @@ simple_watcher/
 ## Platform Notes
 
 - **macOS:** FSEvents reports changes after about 50 ms, and merges a burst of changes to one file into one event, which is reported by the file's state when it arrives.
+- **Linux:** watching needs a native Linux filesystem. Under WSL, the Windows drives (`/mnt/c`, `/mnt/d`, ...) deliver no inotify events, so watch folders in the Linux filesystem (`~/...`).
 - **Linux:** inotify watches one directory at a time, so a subtree watch adds a watch for each folder, including folders created while it runs. A very large tree can reach the system's limit on watches (`fs.inotify.max_user_watches`).
 - The watch flags map to the nearest change each system reports; `Watch_security` has no exact match off Windows.
 
