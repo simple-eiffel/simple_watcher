@@ -166,6 +166,18 @@ end</code></pre>
                 <tr><td><code>event_type_string</code></td><td>Human-readable event type</td></tr>
             </table>
         </section>
+
+        <section id="platforms">
+            <h2>Platforms</h2>
+            <p>Tested on Windows, Linux and macOS (see the README's badges). Paths are the platform's own: <code>"C:\MyFolder"</code> on Windows, <code>"/Users/me/folder"</code> or <code>"/home/me/folder"</code> on macOS and Linux.</p>
+            <ul>
+                <li><strong>macOS:</strong> FSEvents reports changes after about 50 ms, and merges a burst of changes to one file into one event, which is reported by the file's state when it arrives.</li>
+                <li><strong>Linux:</strong> watching needs a native Linux filesystem. Under WSL, the Windows drives (<code>/mnt/c</code>, <code>/mnt/d</code>, ...) deliver no inotify events, so watch folders in the Linux filesystem (<code>~/...</code>).</li>
+                <li><strong>Linux:</strong> inotify watches one directory at a time, so a subtree watch adds a watch for each folder, including folders created while it runs. A very large tree can reach the system's limit on watches (<code>fs.inotify.max_user_watches</code>).</li>
+                <li>The watch flags map to the nearest change each system reports; <code>Watch_security</code> has no exact match off Windows.</li>
+            </ul>
+        </section>
+
     </main>
 
     <footer>
